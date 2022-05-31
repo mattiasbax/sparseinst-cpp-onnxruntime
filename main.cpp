@@ -16,14 +16,14 @@
 namespace
 {
 
-std::vector<float> loadImage( const std::string& filename, cv::Size size )
+std::vector<float> preProcessFrame( const cv::Mat& inputFrame, const cv::Size& networkInputSize )
 {
-    cv::Mat image = cv::imread( filename );      // read image
-    cvtColor( image, image, cv::COLOR_BGR2RGB ); // convert from bgr  to rgb
-    cv::resize( image, image, size );            // resize to network image size
-    image = image.reshape( 1, 1 );               // flatten to 1D
+    cv::Mat frame;
+    cv::resize( inputFrame, frame, networkInputSize ); // resize to network image size
+    cvtColor( frame, frame, cv::COLOR_BGR2RGB );       // convert from bgr  to rgb
+    frame = frame.reshape( 1, 1 );                     // flatten to 1D
     std::vector<float> imageData;
-    image.convertTo( imageData, CV_32FC1 ); // convert to float
+    frame.convertTo( imageData, CV_32FC1 ); // convert to float
     return imageData;
 }
 
@@ -109,7 +109,9 @@ int main( )
     ///////////// Prepare input
     constexpr int numChannels = 3;
     const cv::Size inputImageSize = cv::Size( 640, 640 );
-    std::vector<float> inputImageData = loadImage( imageFilepath, inputImageSize );
+
+    cv::Mat inputFrame = cv::imread( imageFilepath );
+    std::vector<float> inputImageData = preProcessFrame( inputFrame, inputImageSize );
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu( OrtDeviceAllocator, OrtMemTypeDefault );
     const std::array<int64_t, 4> inputShape = { 1, inputImageSize.width, inputImageSize.height, numChannels };
     Ort::Value inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
@@ -140,8 +142,7 @@ int main( )
     const float* scoresData = scores.GetTensorData<float>( );
     const int64_t* labelsData = labels.GetTensorData<int64_t>( );
 
-    cv::Mat underlay = cv::imread( imageFilepath );
-    cv::Mat green( underlay.size( ), CV_8UC3, cv::Scalar( 0., 75., 0. ) );
+    cv::Mat green( inputFrame.size( ), CV_8UC3, cv::Scalar( 0., 75., 0. ) );
 
     const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
     const float confidenceThreshold = 0.6f;
@@ -150,21 +151,21 @@ int main( )
     for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
         if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
             continue;
-        std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
+        // std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
         filteredMasks.push_back( cv::Mat( inputImageSize, CV_8UC1, (uchar*) masksData + inputImageSize.area( ) * idx ) );
         cv::Mat& mask = filteredMasks.back( );
 
-        cv::resize( mask, mask, underlay.size( ) );
-        cv::add( green, underlay, underlay, mask );
+        cv::resize( mask, mask, inputFrame.size( ) );
+        cv::add( green, inputFrame, inputFrame, mask );
 
         std::vector<cv::Mat> contours;
         cv::Mat hierarchy;
         cv::findContours( mask, contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE );
-        cv::drawContours( underlay, contours, -1, cv::Scalar{ 0., 255., 0. }, 2, cv::LINE_8, hierarchy, 100 );
+        cv::drawContours( inputFrame, contours, -1, cv::Scalar{ 0., 255., 0. }, 2, cv::LINE_8, hierarchy, 100 );
     }
 
-    cv::imshow( "result", underlay );
+    cv::imshow( "result", inputFrame );
     cv::waitKey( 0 );
-    
+
     return 0;
 }
