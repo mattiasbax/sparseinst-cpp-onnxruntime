@@ -1,4 +1,5 @@
 #include <iostream>
+#include <onnxruntime_c_api.h>
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
 #include <opencv2/dnn/dnn.hpp>
@@ -7,6 +8,10 @@
 #include <opencv2/imgproc.hpp>
 #include <string>
 #include <vector>
+
+#include <chrono>
+#include <fstream>
+#include <iostream>
 
 namespace
 {
@@ -18,7 +23,7 @@ std::vector<float> loadImage( const std::string& filename, cv::Size size )
     cv::resize( image, image, size );            // resize to network image size
     image = image.reshape( 1, 1 );               // flatten to 1D
     std::vector<float> imageData;
-    image.convertTo( imageData, CV_32FC1, 1. / 255. ); // convert to float and scale
+    image.convertTo( imageData, CV_32FC1 ); // convert to float
     return imageData;
 }
 
@@ -91,7 +96,13 @@ int main( )
     const std::string imageFilepath = "C:\\Users\\mattias.backstrom\\models\\inframe.jpg";
 
     Ort::Env env( OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING, instanceName.c_str( ) );
-    Ort::Session session( env, L"C:\\Users\\mattias.backstrom\\models\\sparse_inst_r50_giam_aug_2b7d68.onnx", Ort::SessionOptions{ nullptr } );
+    Ort::SessionOptions sessionOptions;
+    // sessionOptions.SetIntraOpNumThreads( 1 );
+    // sessionOptions.SetGraphOptimizationLevel( GraphOptimizationLevel:: );
+    OrtCUDAProviderOptions cudaOptions;
+    cudaOptions.device_id = 0;
+    sessionOptions.AppendExecutionProvider_CUDA( cudaOptions );
+    Ort::Session session( env, L"C:\\Users\\mattias.backstrom\\models\\sparse_inst_r50_giam_aug_2b7d68.onnx", sessionOptions );
 
     ModelParameters mp = getModelParameters( session, true );
 
@@ -101,21 +112,44 @@ int main( )
     std::vector<float> inputImageData = loadImage( imageFilepath, inputImageSize );
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu( OrtDeviceAllocator, OrtMemTypeDefault );
     const std::array<int64_t, 4> inputShape = { 1, inputImageSize.width, inputImageSize.height, numChannels };
-    auto inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
+    Ort::Value inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
 
     ///////////// Run inference and inspect data
 
-    const std::vector<Ort::Value> outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
+    constexpr int numberOfInferences = 1;
+    const float* inputData = inputTensor.GetTensorData<float>( );
+
+    std::vector<Ort::Value> outputTensors;
+    outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
+
+    auto start = std::chrono::system_clock::now( );
+    for ( int i = 0; i < numberOfInferences; ++i ) {
+        outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
+    }
+    auto end = std::chrono::system_clock::now( );
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>( end - start );
+    std::cout << "Average inference time [ms]:" << elapsed.count( ) / numberOfInferences << '\n';
 
     const Ort::Value& masks = outputTensors[ 0 ];
     const Ort::Value& scores = outputTensors[ 1 ];
     const Ort::Value& labels = outputTensors[ 2 ];
 
+    const bool* masksData = masks.GetTensorData<bool>( );
     const float* scoresData = scores.GetTensorData<float>( );
     const int64_t* labelsData = labels.GetTensorData<int64_t>( );
-    for ( int idx = 0; idx < 50; ++idx ) {
-        std::cout << "Data: " << scoresData[ idx ] << ", " << labelsData[ idx ] << std::endl;
-    }
 
+    std::vector<uchar> maskVec;
+    maskVec.reserve( 640 * 640 );
+    for ( int64_t i = 0; i < 640 * 640; ++i ) {
+        maskVec.push_back( (uchar) masksData[ i + 640 * 640 ] );
+    }
+    cv::Mat mask( inputImageSize, CV_8UC1, maskVec.data( ) );
+    cv::Mat inputImage = cv::imread( imageFilepath );
+    cv::resize( inputImage, inputImage, inputImageSize );
+    cv::Mat result;
+    inputImage.copyTo( result, mask );
+
+    cv::imshow( "result", result );
+    cv::waitKey( 0 );
     return 0;
 }
