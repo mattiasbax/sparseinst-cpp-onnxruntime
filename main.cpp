@@ -114,7 +114,7 @@ int main( )
     const std::array<int64_t, 4> inputShape = { 1, inputImageSize.width, inputImageSize.height, numChannels };
     Ort::Value inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
 
-    ///////////// Run inference and inspect data
+    ///////////// Run inference
 
     constexpr int numberOfInferences = 1;
     const float* inputData = inputTensor.GetTensorData<float>( );
@@ -130,6 +130,8 @@ int main( )
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>( end - start );
     std::cout << "Average inference time [ms]:" << elapsed.count( ) / numberOfInferences << '\n';
 
+    ///////////// Postprocess data
+
     const Ort::Value& masks = outputTensors[ 0 ];
     const Ort::Value& scores = outputTensors[ 1 ];
     const Ort::Value& labels = outputTensors[ 2 ];
@@ -138,12 +140,16 @@ int main( )
     const float* scoresData = scores.GetTensorData<float>( );
     const int64_t* labelsData = labels.GetTensorData<int64_t>( );
 
-    std::vector<uchar> maskVec;
-    maskVec.reserve( 640 * 640 );
-    for ( int64_t i = 0; i < 640 * 640; ++i ) {
-        maskVec.push_back( (uchar) masksData[ i + 640 * 640 ] );
+    const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
+    const float confidenceThreshold = 0.6f;
+    const std::vector<int> classesToDetect = { 0 };
+    for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
+        if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
+            continue;
+        std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
     }
-    cv::Mat mask( inputImageSize, CV_8UC1, maskVec.data( ) );
+
+    cv::Mat mask( inputImageSize, CV_8UC1, (uchar*) masksData );
     cv::Mat inputImage = cv::imread( imageFilepath );
     cv::resize( inputImage, inputImage, inputImageSize );
     cv::Mat result;
