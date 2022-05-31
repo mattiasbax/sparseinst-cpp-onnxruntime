@@ -140,22 +140,31 @@ int main( )
     const float* scoresData = scores.GetTensorData<float>( );
     const int64_t* labelsData = labels.GetTensorData<int64_t>( );
 
+    cv::Mat underlay = cv::imread( imageFilepath );
+    cv::Mat green( underlay.size( ), CV_8UC3, cv::Scalar( 0., 75., 0. ) );
+
     const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
     const float confidenceThreshold = 0.6f;
     const std::vector<int> classesToDetect = { 0 };
+    std::vector<cv::Mat> filteredMasks;
     for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
         if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
             continue;
         std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
+        filteredMasks.push_back( cv::Mat( inputImageSize, CV_8UC1, (uchar*) masksData + inputImageSize.area( ) * idx ) );
+        cv::Mat& mask = filteredMasks.back( );
+
+        cv::resize( mask, mask, underlay.size( ) );
+        cv::add( green, underlay, underlay, mask );
+
+        std::vector<cv::Mat> contours;
+        cv::Mat hierarchy;
+        cv::findContours( mask, contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE );
+        cv::drawContours( underlay, contours, -1, cv::Scalar{ 0., 255., 0. }, 2, cv::LINE_8, hierarchy, 100 );
     }
 
-    cv::Mat mask( inputImageSize, CV_8UC1, (uchar*) masksData );
-    cv::Mat inputImage = cv::imread( imageFilepath );
-    cv::resize( inputImage, inputImage, inputImageSize );
-    cv::Mat result;
-    inputImage.copyTo( result, mask );
-
-    cv::imshow( "result", result );
+    cv::imshow( "result", underlay );
     cv::waitKey( 0 );
+    
     return 0;
 }
