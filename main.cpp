@@ -1,3 +1,4 @@
+#include <fstream>
 #include <iostream>
 #include <onnxruntime_c_api.h>
 #include <onnxruntime_cxx_api.h>
@@ -8,10 +9,6 @@
 #include <opencv2/imgproc.hpp>
 #include <string>
 #include <vector>
-
-#include <chrono>
-#include <fstream>
-#include <iostream>
 
 namespace
 {
@@ -93,79 +90,66 @@ int main( )
     constexpr bool useCuda = true;
     const std::string instanceName = "SparseInst";
 
-    const std::string imageFilepath = "C:\\Users\\mattias.backstrom\\models\\inframe.jpg";
-
     Ort::Env env( OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING, instanceName.c_str( ) );
     Ort::SessionOptions sessionOptions;
     // sessionOptions.SetIntraOpNumThreads( 1 );
-    // sessionOptions.SetGraphOptimizationLevel( GraphOptimizationLevel:: );
+    // sessionOptions.SetGraphOptimizationLevel( GraphOptimizationLevel::ORT_DISABLE_ALL );
     OrtCUDAProviderOptions cudaOptions;
     cudaOptions.device_id = 0;
     sessionOptions.AppendExecutionProvider_CUDA( cudaOptions );
     Ort::Session session( env, L"C:\\Users\\mattias.backstrom\\models\\sparse_inst_r50_giam_aug_2b7d68.onnx", sessionOptions );
-
-    ModelParameters mp = getModelParameters( session, true );
+    ModelParameters mp = getModelParameters( session );
 
     ///////////// Prepare input
     constexpr int numChannels = 3;
     const cv::Size inputImageSize = cv::Size( 640, 640 );
 
-    cv::Mat inputFrame = cv::imread( imageFilepath );
-    std::vector<float> inputImageData = preProcessFrame( inputFrame, inputImageSize );
-    Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu( OrtDeviceAllocator, OrtMemTypeDefault );
-    const std::array<int64_t, 4> inputShape = { 1, inputImageSize.width, inputImageSize.height, numChannels };
-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
+    const std::string imageFilepath = "C:\\Users\\mattias.backstrom\\models\\inframe.jpg";
+    cv::VideoCapture video( "C:\\Users\\mattias.backstrom\\models\\Untitled_0000.mov" );
+    while ( 1 ) {
+        cv::Mat inputFrame;
+        video >> inputFrame;
+        if ( inputFrame.empty( ) )
+            break;
 
-    ///////////// Run inference
+        std::vector<float> inputImageData = preProcessFrame( inputFrame, inputImageSize );
+        Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu( OrtDeviceAllocator, OrtMemTypeDefault );
+        const std::array<int64_t, 4> inputShape = { 1, inputImageSize.width, inputImageSize.height, numChannels };
+        const Ort::Value inputTensor = Ort::Value::CreateTensor<float>( memoryInfo, inputImageData.data( ), inputImageData.size( ), inputShape.data( ), inputShape.size( ) );
+        std::vector<Ort::Value> outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
 
-    constexpr int numberOfInferences = 1;
-    const float* inputData = inputTensor.GetTensorData<float>( );
+        const Ort::Value& masks = outputTensors[ 0 ];
+        const Ort::Value& scores = outputTensors[ 1 ];
+        const Ort::Value& labels = outputTensors[ 2 ];
 
-    std::vector<Ort::Value> outputTensors;
-    outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
+        const bool* masksData = masks.GetTensorData<bool>( );
+        const float* scoresData = scores.GetTensorData<float>( );
+        const int64_t* labelsData = labels.GetTensorData<int64_t>( );
 
-    auto start = std::chrono::system_clock::now( );
-    for ( int i = 0; i < numberOfInferences; ++i ) {
-        outputTensors = session.Run( Ort::RunOptions{ nullptr }, mp.inputNodeNames.data( ), &inputTensor, mp.numInputNodes, mp.outputNodeNames.data( ), mp.numOutputNodes );
+        cv::Mat green( inputFrame.size( ), CV_8UC3, cv::Scalar( 0., 75., 0. ) );
+
+        const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
+        const float confidenceThreshold = 0.6f;
+        const std::vector<int> classesToDetect = { 0 };
+        std::vector<cv::Mat> filteredMasks;
+        for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
+            if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
+                continue;
+            // std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
+            filteredMasks.push_back( cv::Mat( inputImageSize, CV_8UC1, (uchar*) masksData + inputImageSize.area( ) * idx ) );
+            cv::Mat& mask = filteredMasks.back( );
+
+            cv::resize( mask, mask, inputFrame.size( ) );
+            cv::add( green, inputFrame, inputFrame, mask );
+
+            std::vector<cv::Mat> contours;
+            cv::findContours( mask, contours, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE );
+            cv::drawContours( inputFrame, contours, -1, cv::Scalar{ 0., 175., 0. }, 1, cv::LINE_AA );
+        }
+        cv::imshow( "result", inputFrame );
+        cv::waitKey( 1 );
     }
-    auto end = std::chrono::system_clock::now( );
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>( end - start );
-    std::cout << "Average inference time [ms]:" << elapsed.count( ) / numberOfInferences << '\n';
-
-    ///////////// Postprocess data
-
-    const Ort::Value& masks = outputTensors[ 0 ];
-    const Ort::Value& scores = outputTensors[ 1 ];
-    const Ort::Value& labels = outputTensors[ 2 ];
-
-    const bool* masksData = masks.GetTensorData<bool>( );
-    const float* scoresData = scores.GetTensorData<float>( );
-    const int64_t* labelsData = labels.GetTensorData<int64_t>( );
-
-    cv::Mat green( inputFrame.size( ), CV_8UC3, cv::Scalar( 0., 75., 0. ) );
-
-    const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
-    const float confidenceThreshold = 0.6f;
-    const std::vector<int> classesToDetect = { 0 };
-    std::vector<cv::Mat> filteredMasks;
-    for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
-        if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
-            continue;
-        // std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
-        filteredMasks.push_back( cv::Mat( inputImageSize, CV_8UC1, (uchar*) masksData + inputImageSize.area( ) * idx ) );
-        cv::Mat& mask = filteredMasks.back( );
-
-        cv::resize( mask, mask, inputFrame.size( ) );
-        cv::add( green, inputFrame, inputFrame, mask );
-
-        std::vector<cv::Mat> contours;
-        cv::Mat hierarchy;
-        cv::findContours( mask, contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE );
-        cv::drawContours( inputFrame, contours, -1, cv::Scalar{ 0., 255., 0. }, 2, cv::LINE_8, hierarchy, 100 );
-    }
-
-    cv::imshow( "result", inputFrame );
-    cv::waitKey( 0 );
-
+    video.release( );
+    cv::destroyAllWindows( );
     return 0;
 }
