@@ -56,6 +56,8 @@ ModelParameters getModelParameters( const Ort::Session& session, bool printInfo 
         mp.outputNodesDimensions.emplace_back( outputTensorInfo.GetShape( ) );
     }
 
+    // TODO: Copy and deallocate names
+
     if ( !printInfo )
         return mp;
 
@@ -82,6 +84,11 @@ ModelParameters getModelParameters( const Ort::Session& session, bool printInfo 
     return mp;
 }
 
+enum class InputMode {
+    Image,
+    Video
+};
+
 } // namespace
 
 int main( )
@@ -104,11 +111,16 @@ int main( )
     constexpr int numChannels = 3;
     const cv::Size inputImageSize = cv::Size( 640, 640 );
 
-    const std::string imageFilepath = "C:\\Users\\mattias.backstrom\\models\\inframe.jpg";
+    const std::string imageFilepath = "C:\\Users\\mattias.backstrom\\models\\dog.jpg";
     cv::VideoCapture video( "C:\\Users\\mattias.backstrom\\models\\Untitled_0000.mov" );
+    InputMode inputMode = InputMode::Image;
+
     while ( 1 ) {
         cv::Mat inputFrame;
-        video >> inputFrame;
+        if ( inputMode == InputMode::Video )
+            video >> inputFrame;
+        else
+            inputFrame = cv::imread( imageFilepath );
         if ( inputFrame.empty( ) )
             break;
 
@@ -130,12 +142,11 @@ int main( )
 
         const int64_t maxNumberOfMasks = scores.GetTensorTypeAndShapeInfo( ).GetShape( ).at( 1 );
         const float confidenceThreshold = 0.6f;
-        const std::vector<int> classesToDetect = { 0 };
+        const std::vector<int> classesToDetect = { 0, 16 };
         std::vector<cv::Mat> filteredMasks;
         for ( int64_t idx = 0; idx < maxNumberOfMasks; ++idx ) {
             if ( ( scoresData[ idx ] ) < confidenceThreshold || std::find( classesToDetect.begin( ), classesToDetect.end( ), labelsData[ idx ] ) == classesToDetect.end( ) )
                 continue;
-            // std::cout << "Detecteced label " << labelsData[ idx ] << " with confidence: " << scoresData[ idx ] << std::endl;
             filteredMasks.push_back( cv::Mat( inputImageSize, CV_8UC1, (uchar*) masksData + inputImageSize.area( ) * idx ) );
             cv::Mat& mask = filteredMasks.back( );
 
@@ -147,6 +158,11 @@ int main( )
             cv::drawContours( inputFrame, contours, -1, cv::Scalar{ 0., 175., 0. }, 1, cv::LINE_AA );
         }
         cv::imshow( "result", inputFrame );
+        if ( inputMode != InputMode::Video ) {
+            cv::waitKey( 0 );
+            cv::imwrite( "C:\\Users\\mattias.backstrom\\data\\result.jpg", inputFrame );
+            break;
+        }
         cv::waitKey( 1 );
     }
     video.release( );
